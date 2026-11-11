@@ -20,3 +20,5 @@ project/target/
 # Systeme
 .DS_Store
 Thumbs.db
+# Fichiers de Claude (pas dans le depot)
+Claude outputs/
