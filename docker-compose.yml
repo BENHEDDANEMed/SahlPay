@@ -1,0 +1,131 @@
+# Projet SahlPay - Ecosysteme Big Data 2
+# Kafka (KRaft) + Spark 3.5 (1 master, 2 workers) + MinIO + Jupyter
+
+x-spark-image: &spark-image spark:3.5.8-scala2.12-java17-python3-ubuntu
+
+services:
+
+  # ---------------------------------------------------------------- Kafka
+  kafka:
+    image: apache/kafka:3.9.1
+    hostname: kafka
+    ports:
+      - "9094:9094"            # acces depuis le PC (localhost:9094)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM1Tk
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 15s
+
+  # Cree le topic "transactions" (3 partitions) puis s'arrete
+  kafka-init:
+    image: apache/kafka:3.9.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/opt/kafka/bin/kafka-topics.sh"]
+    command: ["--bootstrap-server", "kafka:9092", "--create", "--if-not-exists",
+              "--topic", "transactions", "--partitions", "3", "--replication-factor", "1"]
+    restart: "no"
+
+  # ---------------------------------------------------------------- MinIO
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    hostname: minio
+    user: root
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "9000:9000"            # API S3
+      - "9001:9001"            # console web
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    volumes:
+      - minio-data:/data
+
+  # Cree le bucket "lake" puis s'arrete (relance tant que MinIO n'est pas pret)
+  minio-init:
+    image: cgr.dev/chainguard/minio-client:latest
+    depends_on:
+      - minio
+    environment:
+      MC_HOST_local: http://minioadmin:minioadmin123@minio:9000
+    command: ["mb", "--ignore-existing", "local/lake"]
+    restart: on-failure
+
+  # Client mc a la demande : docker compose run --rm mc ls --recursive local/lake/
+  mc:
+    image: cgr.dev/chainguard/minio-client:latest
+    profiles: ["tools"]
+    environment:
+      MC_HOST_local: http://minioadmin:minioadmin123@minio:9000
+
+  # ---------------------------------------------------------------- Spark
+  spark-master:
+    image: *spark-image
+    hostname: spark-master
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master",
+              "--host", "spark-master", "--port", "7077", "--webui-port", "8080"]
+    ports:
+      - "8080:8080"            # Spark Master UI
+      - "7077:7077"
+
+  spark-worker-1:
+    image: *spark-image
+    hostname: spark-worker-1
+    depends_on:
+      - spark-master
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker",
+              "spark://spark-master:7077", "--cores", "2", "--memory", "2g",
+              "--webui-port", "8081", "--work-dir", "/opt/spark/work-dir"]
+    ports:
+      - "8081:8081"
+
+  spark-worker-2:
+    image: *spark-image
+    hostname: spark-worker-2
+    depends_on:
+      - spark-master
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker",
+              "spark://spark-master:7077", "--cores", "2", "--memory", "2g",
+              "--webui-port", "8082", "--work-dir", "/opt/spark/work-dir"]
+    ports:
+      - "8082:8082"
+
+  # ---------------------------------------------------------------- Jupyter
+  jupyter:
+    build:
+      context: ./jupyter
+      args:
+        SPARK_IMAGE: *spark-image
+    hostname: jupyter
+    depends_on:
+      - spark-master
+      - kafka
+      - minio
+    ports:
+      - "8888:8888"            # JupyterLab
+      - "4040-4045:4040-4045"  # Spark UI des applications (DAG, stages)
+    volumes:
+      - ./:/workspace          # tout le projet est visible dans Jupyter
+      - ivy-cache:/root/.ivy2  # garde les jars telecharges
+
+volumes:
+  minio-data:
+  ivy-cache:

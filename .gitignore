@@ -1,0 +1,22 @@
+# Donnees generees (chacun les regenere avec producer.py)
+data/*.jsonl
+data/*.json
+!data/merchants.json
+
+# Spark / Jupyter
+.ipynb_checkpoints/
+spark-warehouse/
+metastore_db/
+derby.log
+checkpoints/
+__pycache__/
+
+# Scala / sbt
+target/
+project/target/
+.bsp/
+.idea/
+
+# Systeme
+.DS_Store
+Thumbs.db
